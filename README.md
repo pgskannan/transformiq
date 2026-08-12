@@ -5,14 +5,23 @@ Indirect Procurement, SAP S/4HANA + SAP Ariba). See `AGENTS.md` / `CLAUDE.md` fo
 operating manual (architecture, business rules, security rules, database rules, testing
 rules, deployment rules, do-not-do rules) — read that before making non-trivial changes.
 
-This repo covers **Sprint 1 + Sprint 2 + Sprint 3** from `TransformIQ_Sprint_Plan.xlsx`
-(TQ-001–TQ-010, TQ-079, TQ-011–TQ-020, and TQ-021–TQ-029) — the full **P0 "Foundation" phase**
-plus the first slice of procurement-data transformation: real file ingestion, async job
-processing, data profiling, anomaly detection, semantic type inference, quality scoring, and
-the Business Partner canonical entity model. See `docs/p0-exit-checklist.md` for the P0
-evidence (Sprint 1+2, mapped item by item) and the per-feature ADR addendums in
-`docs/adr/0002-gcp-architecture-and-tenancy.md` for the Sprint 3 design decisions and their
-documented scope tradeoffs.
+This repo covers **Sprint 1 + Sprint 2 + Sprint 3 + Sprint 4** from
+`TransformIQ_Sprint_Plan.xlsx` (TQ-001–TQ-010, TQ-079, TQ-011–TQ-020, TQ-021–TQ-029, and
+TQ-030–TQ-038 + TQ-082) — the full **P0 "Foundation" phase**, the first slice of
+procurement-data transformation (real file ingestion, async job processing, data profiling,
+anomaly detection, semantic type inference, quality scoring, the Business Partner canonical
+entity model), and now **entity resolution**: deterministic + fuzzy duplicate matching for
+Business Partners, a confidence/evidence model, a four-state decision workflow with an
+unauthorized-auto-merge guardrail, BP field normalization, the Supplier entity model, and a
+frontend screen for reviewing and deciding candidate matches. See `docs/p0-exit-checklist.md`
+for the P0 evidence (Sprint 1+2, mapped item by item) and the per-feature ADR addendums in
+`docs/adr/0002-gcp-architecture-and-tenancy.md` for the Sprint 3 and Sprint 4 design
+decisions and their documented scope tradeoffs.
+
+Sprint 5 (Vertex AI semantic matching, TQ-039/040) is the point this project actually needs a
+real GCP project — Sprint 4 required none, and per explicit direction none was created for
+it. See the Sprint 4 ADR addendums below for how that was confirmed against the sprint plan
+before starting.
 
 ## What's actually verified vs. what's still ahead
 
@@ -21,8 +30,8 @@ and no internet access to Prisma's binary CDN** (see `docs/adr/0001-tech-stack.m
 that means concretely:
 
 **Verified for real, in this repo, right now:**
-- Backend builds (`tsc`), lints (`eslint`), and passes its full test suite (19 suites, 120
-  tests) against a **real local Postgres 16**, running as the actual least-privilege
+- Backend builds (`tsc`), lints (`eslint`), and passes its full test suite (**25 suites, 157
+  tests**) against a **real local Postgres 16**, running as the actual least-privilege
   `transformiq_app` role the production app would use — not a superuser connection that
   could mask a missing GRANT.
 - Real CSV and XLSX ingestion (TQ-021/TQ-022): multipart file upload, character-encoding
@@ -62,10 +71,48 @@ that means concretely:
   inferred types, and semantic types for an ingested dataset, plus its flagged anomalies and a
   manual re-profile trigger. Satisfies the literal DoD wording; automated relationship
   *discovery* is explicitly out of scope here (see "Known gaps").
+- Entity resolution matching (TQ-030–032, FR-DUP-001/002) — deterministic exact matching on
+  normalized identifiers plus real Postgres `pg_trgm` fuzzy name/address matching, with the
+  `0.5` similarity threshold chosen from **measured** trigram scores against representative
+  test-name pairs (run directly through `psql`), not guessed. Proven via a golden fixture
+  regression test (TQ-030) seeding known duplicate and non-duplicate Business Partner pairs
+  through the real HTTP API and asserting the matcher gets every one right.
+- A confidence/evidence model (TQ-033, FR-DUP-003) — exact identifier matches score 1.0;
+  corroborating name + address similarity signals blend to a higher score than either alone;
+  a single uncorroborated signal is discounted. 7 unit tests cover the formula directly.
+- The full four-state decision workflow (TQ-034, FR-DUP-004/005) —
+  `needs_review`/`merge`/`keep_separate`/`reject` — including the "never overwrite a human's
+  prior decision on re-run" upsert semantics, proven with a dedicated regression test. Merge
+  decisions here are **recorded, not executed** — no Business Partner row is ever mutated by
+  this sprint's code; actually collapsing two BP records is TQ-062 (Sprint 7), confirmed
+  against the sprint plan before scoping this sprint's work.
+- The unauthorized-auto-merge guardrail (TQ-035, FR-DUP-006, AGENTS.md Do-Not-Do #3) — a
+  `merge` decision requires `approve` permission, not just `modify`; denial is proven by
+  three layered tests (unauthenticated 401, STEWARD-denied-with-persisted-audit-event
+  verified by direct DB query since no Audit Explorer exists yet, VIEWER-denied) plus the
+  frontend surfacing the backend's own denial message rather than a generic error.
+- BP field normalization (TQ-036, FR-BP-004) — a pure, unit-tested function library
+  (11 tests) used only at match time, explicitly never auto-applied to stored BP records;
+  the "no real customer data dictionary exists yet" gap is documented rather than assumed.
+- The Supplier entity model + BP linkage (TQ-037, FR-SUP-001/002) — a project-scoped
+  `suppliers` table with a two-tier duplicate design: a real DB unique constraint hard-blocks
+  true duplicates (409), while a same-source-system/different-number case is soft-flagged
+  with a `duplicateWarning` rather than blocked. 5 tests cover both tiers plus the N:1
+  BP linkage and 404 handling.
+- The BP/Supplier Resolution frontend screen (TQ-038) — a steward can review a match
+  candidate pair side-by-side (including each side's linked Supplier "roles") and record a
+  decision, with the guardrail's own permission-denied message surfaced verbatim on a
+  blocked merge attempt. 4 component tests cover list/compare, deciding, the guardrail
+  denial message, and the empty state.
+- Indexing & threshold tuning (TQ-082) — a GIN trigram *expression* index matching the
+  fuzzy-match query's `upper(...)` normalization, with a measured p95 latency of **~178ms**
+  against a 300-row fixture (500ms budget). Honestly documented: at this row count Postgres's
+  planner doesn't actually choose the new index (verified via `EXPLAIN ANALYZE`) — real
+  Cloud SQL-scale verification remains open, not silently assumed to generalize.
 - Every new table this sprint (`dataset_anomalies`, `business_partners`, `bp_addresses`,
-  `bp_identifiers`, `bp_relationships`) has Row-Level Security enabled and was checked against
-  the least-privilege `transformiq_app` role's grants, the same pattern established in
-  Sprint 2.
+  `bp_identifiers`, `bp_relationships`, `entity_matches`, `suppliers`) has Row-Level Security
+  enabled and was checked against the least-privilege `transformiq_app` role's grants, the
+  same pattern established in Sprint 2.
 - Row-Level Security actually blocks cross-tenant reads/writes: live HTTP tests prove
   cross-tenant `GET`/`PATCH` on projects and datasets return 404 (RLS makes the row
   invisible, not just forbidden), and that an unscoped raw insert is rejected by Postgres
@@ -83,11 +130,13 @@ that means concretely:
   test that captures real stdout output.
 - CI runs a `secret-scan` job (`gitleaks`, full git history + working tree) on every
   push/PR, gating merge — ran clean against this repo's actual history while building it.
-- Frontend builds (`vite build`), lints, and passes its test suite (`vitest`, 4 test files,
-  8 tests), including the Project Setup form (TQ-018) submitting all fields, the Data Profile
-  screen (TQ-029) rendering field-level scores/types/anomalies from a mocked API and offering
-  a "Profile now" action for an unprofiled version, and the dev-only tenant-bootstrap page
-  being fully absent from the production bundle (verified by grepping the built output).
+- Frontend builds (`vite build`), lints, and passes its test suite (`vitest`, **5 test files,
+  12 tests**), including the Project Setup form (TQ-018) submitting all fields, the Data
+  Profile screen (TQ-029) rendering field-level scores/types/anomalies from a mocked API and
+  offering a "Profile now" action for an unprofiled version, the Entity Resolution screen
+  (TQ-038) covering compare/decide/guardrail-denial/empty-state, and the dev-only
+  tenant-bootstrap page being fully absent from the production bundle (verified by grepping
+  the built output).
 - The migration runner (`db/migrate.ts`) applies `db/migrations/*.sql` to a blank database
   from scratch, using a schema-owner connection separate from the app's least-privilege role.
 - `kysely-codegen` generates real TypeScript types by introspecting that live database.
@@ -108,9 +157,11 @@ that means concretely:
   dev-token path has ever actually been exercised.
 - Secret Manager — `src/lib/secrets.ts` falls back to `.env` locally; the Secret Manager
   branch has never run against a real project.
-- Vertex AI — `src/lib/vertexAI.ts` is a typed stub; both functions throw until Sprint 4/5
-  wire them up for real (TQ-032/TQ-039/TQ-040). Semantic type inference (TQ-026) ships this
-  sprint as a heuristics-only engine that doesn't call it — see "Known gaps".
+- Vertex AI — `src/lib/vertexAI.ts` is a typed stub; both functions throw until Sprint 5
+  wires them up for real (TQ-039/TQ-040). Semantic type inference (TQ-026) and entity
+  resolution fuzzy matching (TQ-032, Sprint 4) both ship as deterministic/Postgres-native
+  engines that don't call it — confirmed against the sprint plan that neither needed to, and
+  no GCP project has been created yet as a result — see "Known gaps".
 - GCS object storage (`GcsObjectStorage` in `src/lib/objectStorage.ts`) — implemented and
   code-reviewed, never run against a real bucket.
 - Cloud SQL `ssl_mode = "ENCRYPTED_ONLY"` and the GCS bucket versioning/retention-lock config
@@ -193,13 +244,36 @@ Short version: Prisma's CLI needs to download a native query-engine binary from
 migrations are plain SQL, types are generated from a live database via pure-JS introspection.
 Full reasoning in `docs/adr/0001-tech-stack.md`.
 
-## Known gaps (intentional — Sprint 3 scope closes here; these are Sprint 4+ or explicitly deferred)
+## Known gaps (intentional — Sprint 4 scope closes here; these are Sprint 5+ or explicitly deferred)
 
 Sprint 1's gap list (open tenant creation, single-role RBAC, no least-privilege audit role, no
-PATCH/GET-by-id, no dataset model) is **closed as of Sprint 2**, and Sprint 2's ingestion gap
-(JSON+base64 MVP, no real file upload) is **closed as of Sprint 3** (TQ-021/TQ-022) — see
-`docs/p0-exit-checklist.md` for the Sprint 1+2 evidence. What's still genuinely open, going
-into Sprint 4+:
+PATCH/GET-by-id, no dataset model) is **closed as of Sprint 2**, Sprint 2's ingestion gap
+(JSON+base64 MVP, no real file upload) is **closed as of Sprint 3** (TQ-021/TQ-022), and
+Sprint 3's "Business Partner relationship discovery doesn't exist yet" gap is **substantially
+addressed as of Sprint 4** — TQ-028's manual relationships and TQ-030–035's automated
+duplicate-candidate discovery are different features (one records that two BPs are related,
+the other detects that two BP *records* might be the same BP), but automated discovery of
+*something* now exists — see `docs/p0-exit-checklist.md` for the Sprint 1+2 evidence. What's
+still genuinely open, going into Sprint 5+:
+
+- **A "merge" decision is recorded, never executed.** TQ-034/035 (Sprint 4) let a steward
+  decide two Business Partner records are duplicates, but no code in this repo actually
+  rewrites foreign keys or collapses the two rows — that's TQ-062 ("Remediation execution
+  engine"), Sprint 7 scope, confirmed against the sprint plan before Sprint 4 was scoped.
+  A `merge`-decided pair sits recorded and audited, waiting on that later engine.
+- **Entity resolution fuzzy matching is Postgres `pg_trgm`-only, no AI-assisted semantic
+  matching.** Vertex AI semantic matching (TQ-039/040) is Sprint 5 scope. Sprint 4's fuzzy
+  matcher catches typos/abbreviations/legal-suffix variants via trigram similarity; it will
+  not catch a genuinely different-looking name that's semantically the same entity (e.g. a
+  DBA name with no textual overlap to the legal name) — that's exactly the gap Sprint 5's
+  AI-assisted pass is scoped to close.
+- **Entity resolution scope is Business Partners only.** TQ-037 added the Supplier entity
+  and BP linkage, but there is no separate Supplier-to-Supplier fuzzy/exact matching pass —
+  a duplicate Supplier record under the *same* BP is caught by the hard-block/soft-flag logic
+  in `routes/suppliers.ts`; a duplicate BP (and therefore its Suppliers) is caught by the
+  entity-matching engine. Material entity resolution (mentioned in AGENTS.md's Do-Not-Do
+  Rule #3 alongside BP/Supplier) is not built — no Material entity model exists in this repo
+  yet.
 
 - **Login is still a dev-token stand-in**, not real SSO. Backend TQ-006 laid the
   OIDC-verification code path but nothing issues a real token yet.
@@ -245,8 +319,9 @@ into Sprint 4+:
 
 ## Where this fits in the bigger plan
 
-See `TransformIQ_Sprint_Plan.xlsx` for the full 9-sprint backlog (Sprints 1–3 → this repo,
-P0 Foundation plus first-slice ingestion/profiling/BP-entity work; Sprints 4–8 → entity
-resolution, AI recommendations, review workflow, simulation, remediation, rollback, cost
-governance; Sprint 9 → lightweight Target Mapping groundwork). See `AGENTS.md` for the rules
-every change in this repo should follow.
+See `TransformIQ_Sprint_Plan.xlsx` for the full 9-sprint backlog (Sprints 1–4 → this repo,
+P0 Foundation plus first-slice ingestion/profiling/BP-entity work and deterministic/fuzzy
+entity resolution; Sprint 5 → AI-assisted semantic matching + recommendations (the first
+sprint that actually needs a GCP project); Sprints 6–8 → review workflow, simulation,
+remediation/merge execution, rollback, cost governance; Sprint 9 → lightweight Target Mapping
+groundwork). See `AGENTS.md` for the rules every change in this repo should follow.

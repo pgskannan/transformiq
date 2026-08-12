@@ -141,6 +141,23 @@ export interface DatasetVersions {
   version_number: number;
 }
 
+export interface EntityMatches {
+  business_partner_id: string;
+  candidate_business_partner_id: string;
+  confidence: number;
+  created_at: Generated<Timestamp>;
+  decided_at: Timestamp | null;
+  decided_by_user_id: string | null;
+  decision: Generated<string>;
+  entity_type: Generated<string>;
+  evidence: Json;
+  id: string;
+  match_method: string;
+  project_id: string;
+  tenant_id: string;
+  updated_at: Timestamp;
+}
+
 export interface FieldProfiles {
   column_name: string;
   completeness: number;
@@ -215,6 +232,18 @@ export interface Projects {
   updated_at: Timestamp;
 }
 
+export interface Suppliers {
+  business_partner_id: string;
+  created_at: Generated<Timestamp>;
+  id: string;
+  project_id: string;
+  source_system: string | null;
+  status: Generated<string>;
+  supplier_number: string | null;
+  tenant_id: string;
+  updated_at: Timestamp;
+}
+
 export interface Tenants {
   created_at: Generated<Timestamp>;
   id: string;
@@ -243,11 +272,13 @@ export interface DB {
   dataset_profiles: DatasetProfiles;
   dataset_versions: DatasetVersions;
   datasets: Datasets;
+  entity_matches: EntityMatches;
   field_profiles: FieldProfiles;
   ingestion_rejected_rows: IngestionRejectedRows;
   ingestion_runs: IngestionRuns;
   policies: Policies;
   projects: Projects;
+  suppliers: Suppliers;
   tenants: Tenants;
   users: Users;
 }

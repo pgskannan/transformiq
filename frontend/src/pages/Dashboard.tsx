@@ -59,7 +59,8 @@ export function Dashboard() {
           {projects.map((p) => (
             <li key={p.id}>
               <strong>{p.name}</strong> — {p.domain} — {p.source_system} → {p.target_system} (
-              {p.status}) · <Link to={`/projects/${p.id}/data-profile`}>Data profile</Link>
+              {p.status}) · <Link to={`/projects/${p.id}/data-profile`}>Data profile</Link> ·{" "}
+              <Link to={`/projects/${p.id}/entity-resolution`}>Entity resolution</Link>
             </li>
           ))}
         </ul>

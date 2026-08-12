@@ -91,6 +91,79 @@ export interface DatasetAnomaly {
   detail: string;
 }
 
+// TQ-038 (Entity Resolution screen) additions below. See backend/src/routes/entityMatches.ts
+// and businessPartners.ts/suppliers.ts for the corresponding server-side endpoints.
+export type MatchDecision = "needs_review" | "merge" | "keep_separate" | "reject";
+
+export interface MatchSignal {
+  type: "identifier_exact" | "name_similarity" | "address_similarity";
+  detail: string;
+  score: number;
+}
+
+export interface MatchEvidence {
+  signals: MatchSignal[];
+}
+
+export interface EntityMatchSummary {
+  id: string;
+  match_method: "exact" | "fuzzy";
+  confidence: number;
+  evidence: MatchEvidence;
+  decision: MatchDecision;
+  decided_by_user_id: string | null;
+  decided_at: string | null;
+  created_at: string;
+  business_partner_id: string;
+  business_partner_name: string;
+  candidate_business_partner_id: string;
+  candidate_business_partner_name: string;
+}
+
+export interface BusinessPartnerAddress {
+  id: string;
+  address_type: string;
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  region: string | null;
+  postal_code: string | null;
+  country_code: string | null;
+  is_primary: boolean;
+}
+
+export interface BusinessPartnerIdentifier {
+  id: string;
+  identifier_type: string;
+  identifier_value: string;
+  issuing_authority: string | null;
+}
+
+export interface Supplier {
+  id: string;
+  business_partner_id: string;
+  supplier_number: string | null;
+  source_system: string | null;
+  status: string;
+}
+
+export interface BusinessPartnerDetail {
+  id: string;
+  primary_name: string;
+  bp_type: string;
+  source_system: string | null;
+  status: string;
+  addresses: BusinessPartnerAddress[];
+  identifiers: BusinessPartnerIdentifier[];
+  suppliers: Supplier[];
+}
+
+export interface EntityMatchDetail {
+  match: EntityMatchSummary;
+  businessPartner: BusinessPartnerDetail;
+  candidateBusinessPartner: BusinessPartnerDetail;
+}
+
 export const api = {
   health: () => request<{ status: string; service: string; version: string }>("/v1/health"),
 
@@ -168,6 +241,33 @@ export const api = {
     request<{ profile: DatasetProfile; anomalyCount: number }>(
       "/v1/profiling-runs",
       { method: "POST", body: JSON.stringify({ datasetVersionId }) },
+      token
+    ),
+
+  runEntityMatching: (token: string, projectId: string) =>
+    request<{ candidatesFound: number; newOrRefreshed: number; skippedAlreadyDecided: number }>(
+      `/v1/projects/${projectId}/entity-matches/run`,
+      { method: "POST" },
+      token
+    ),
+
+  listEntityMatches: (token: string, projectId: string, decision?: MatchDecision) =>
+    request<{ matches: EntityMatchSummary[] }>(
+      `/v1/projects/${projectId}/entity-matches${decision ? `?decision=${decision}` : ""}`,
+      {},
+      token
+    ),
+
+  getEntityMatch: (token: string, id: string) =>
+    request<EntityMatchDetail>(`/v1/entity-matches/${id}`, {}, token),
+
+  // Deliberately returns the raw ApiError to the caller on 403 rather than swallowing it —
+  // the Entity Resolution screen needs to show the guardrail's own message (AGENTS.md
+  // Do-Not-Do #3: merge requires "approve" permission) rather than a generic failure.
+  decideEntityMatch: (token: string, id: string, decision: MatchDecision) =>
+    request<EntityMatchSummary>(
+      `/v1/entity-matches/${id}/decision`,
+      { method: "PATCH", body: JSON.stringify({ decision }) },
       token
     ),
 };

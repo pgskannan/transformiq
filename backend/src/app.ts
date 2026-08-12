@@ -7,10 +7,12 @@ import { logger } from "./lib/logger";
 import { authRouter } from "./routes/auth";
 import { businessPartnersRouter } from "./routes/businessPartners";
 import { datasetsRouter } from "./routes/datasets";
+import { entityMatchesRouter } from "./routes/entityMatches";
 import { healthRouter } from "./routes/health";
 import { ingestionRouter } from "./routes/ingestion";
 import { profilingRouter } from "./routes/profiling";
 import { projectsRouter } from "./routes/projects";
+import { suppliersRouter } from "./routes/suppliers";
 import { tenantsRouter } from "./routes/tenants";
 
 export function createApp() {
@@ -43,6 +45,8 @@ export function createApp() {
   app.use(ingestionRouter);
   app.use(profilingRouter);
   app.use(businessPartnersRouter);
+  app.use(suppliersRouter);
+  app.use(entityMatchesRouter);
 
   // Not-found + error handling. Deliberately never leaks stack traces to the client.
   app.use((_req, res) => {
