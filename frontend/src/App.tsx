@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./auth/AuthContext";
+import { DataProfile } from "./pages/DataProfile";
 import { Dashboard } from "./pages/Dashboard";
 import { DevBootstrapTenant } from "./pages/DevBootstrapTenant";
 import { Login } from "./pages/Login";
@@ -12,6 +13,7 @@ export function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/projects/new" element={<ProjectSetup />} />
+        <Route path="/projects/:projectId/data-profile" element={<DataProfile />} />
         {/* Dev-only tenant bootstrap route. import.meta.env.DEV is a Vite build-time
             constant that Rollup inlines as `false` in a production build; combined with
             dead-code elimination this route registration (and, since nothing else imports

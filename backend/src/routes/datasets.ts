@@ -1,8 +1,10 @@
-// Dataset ingestion (TQ-013/TQ-014, FR-PROJ-002/003/006). MVP ingestion shape only — a JSON
-// body carrying base64 content. A real multipart/CSV/XLSX upload path with encoding/
-// delimiter/header detection (FR-ING-001/002) is Sprint 3 scope (TQ-021); this sprint just
-// proves the immutable-storage + versioned-dataset plumbing works end to end.
-import { randomUUID } from "crypto";
+// Dataset ingestion MVP shape (TQ-013/TQ-014, FR-PROJ-002/003/006): a JSON body carrying
+// base64 content, no format detection. Kept alongside the real CSV/XLSX connector
+// (routes/ingestion.ts, TQ-021) as a lightweight path for callers that already have parsed/
+// structured bytes and don't need encoding/delimiter/header detection — e.g. a future
+// programmatic API client, or tests that want to seed a dataset without a real file. Both
+// routes share the same version-increment logic (lib/datasetVersioning.ts) so there's one
+// code path for "what does the next version number look like," not two that could drift.
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth";
@@ -10,7 +12,7 @@ import { attachTenant } from "../middleware/tenant";
 import { requirePermission } from "../middleware/rbac";
 import { withTenant } from "../lib/db";
 import { asyncHandler } from "../lib/asyncHandler";
-import { recordAuditEvent } from "../lib/audit";
+import { createDatasetVersion } from "../lib/datasetVersioning";
 import { getObjectStorage } from "../lib/objectStorage";
 
 export const datasetsRouter = Router();
@@ -52,65 +54,14 @@ datasetsRouter.post(
         data,
       });
 
-      let dataset = await trx
-        .selectFrom("datasets")
-        .selectAll()
-        .where("project_id", "=", projectId)
-        .where("name", "=", parsed.data.datasetName)
-        .executeTakeFirst();
-
-      if (!dataset) {
-        dataset = await trx
-          .insertInto("datasets")
-          .values({
-            id: randomUUID(),
-            tenant_id: tenantId,
-            project_id: projectId,
-            name: parsed.data.datasetName,
-            updated_at: new Date(),
-          })
-          .returningAll()
-          .executeTakeFirstOrThrow();
-
-        await recordAuditEvent(trx, {
-          tenantId,
-          actorUserId: req.user!.userId,
-          action: "dataset.created",
-          entityType: "Dataset",
-          entityId: dataset.id,
-          newValue: dataset,
-        });
-      }
-
-      const latest = await trx
-        .selectFrom("dataset_versions")
-        .select(["id", "version_number"])
-        .where("dataset_id", "=", dataset.id)
-        .orderBy("version_number", "desc")
-        .executeTakeFirst();
-
-      const version = await trx
-        .insertInto("dataset_versions")
-        .values({
-          id: randomUUID(),
-          tenant_id: tenantId,
-          dataset_id: dataset.id,
-          version_number: (latest?.version_number ?? 0) + 1,
-          source_artifact_ref: stored.ref,
-          source_artifact_checksum: stored.checksum,
-          parent_version_id: latest?.id ?? null,
-          created_by_user_id: req.user!.userId,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-
-      await recordAuditEvent(trx, {
+      const { dataset, version } = await createDatasetVersion(trx, {
         tenantId,
-        actorUserId: req.user!.userId,
-        action: "dataset_version.created",
-        entityType: "DatasetVersion",
-        entityId: version.id,
-        newValue: { ...version, bytes: stored.bytes },
+        projectId,
+        datasetName: parsed.data.datasetName,
+        sourceArtifactRef: stored.ref,
+        sourceArtifactChecksum: stored.checksum,
+        sourceFilename: parsed.data.filename,
+        createdByUserId: req.user!.userId,
       });
 
       return { dataset, version, bytes: stored.bytes };

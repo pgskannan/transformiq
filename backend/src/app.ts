@@ -1,11 +1,15 @@
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
+import multer from "multer";
 import pinoHttp from "pino-http";
 import { logger } from "./lib/logger";
 import { authRouter } from "./routes/auth";
+import { businessPartnersRouter } from "./routes/businessPartners";
 import { datasetsRouter } from "./routes/datasets";
 import { healthRouter } from "./routes/health";
+import { ingestionRouter } from "./routes/ingestion";
+import { profilingRouter } from "./routes/profiling";
 import { projectsRouter } from "./routes/projects";
 import { tenantsRouter } from "./routes/tenants";
 
@@ -36,6 +40,9 @@ export function createApp() {
   app.use(tenantsRouter);
   app.use(projectsRouter);
   app.use(datasetsRouter);
+  app.use(ingestionRouter);
+  app.use(profilingRouter);
+  app.use(businessPartnersRouter);
 
   // Not-found + error handling. Deliberately never leaks stack traces to the client.
   app.use((_req, res) => {
@@ -44,6 +51,13 @@ export function createApp() {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    // multer reports its own errors (e.g. LIMIT_FILE_SIZE) via next(err) rather than
+    // throwing inside an async handler, so they land here rather than in asyncHandler.
+    if (err instanceof multer.MulterError) {
+      const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+      res.status(status).json({ error: `Upload rejected: ${err.message}` });
+      return;
+    }
     req.log?.error({ err }, "unhandled error");
     res.status(500).json({ error: "Internal server error" });
   });

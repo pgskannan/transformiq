@@ -45,6 +45,78 @@ export interface AuditEvents {
   tenant_id: string;
 }
 
+export interface BpAddresses {
+  address_type: Generated<string>;
+  business_partner_id: string;
+  city: string | null;
+  country_code: string | null;
+  created_at: Generated<Timestamp>;
+  id: string;
+  is_primary: Generated<boolean>;
+  line1: string | null;
+  line2: string | null;
+  postal_code: string | null;
+  region: string | null;
+  tenant_id: string;
+}
+
+export interface BpIdentifiers {
+  business_partner_id: string;
+  created_at: Generated<Timestamp>;
+  id: string;
+  identifier_type: string;
+  identifier_value: string;
+  issuing_authority: string | null;
+  tenant_id: string;
+}
+
+export interface BpRelationships {
+  business_partner_id: string;
+  created_at: Generated<Timestamp>;
+  id: string;
+  provenance: string | null;
+  related_business_partner_id: string;
+  relationship_type: string;
+  tenant_id: string;
+}
+
+export interface BusinessPartners {
+  bp_type: Generated<string>;
+  created_at: Generated<Timestamp>;
+  created_by_user_id: string | null;
+  external_id: string | null;
+  id: string;
+  primary_name: string;
+  project_id: string;
+  source_system: string | null;
+  status: Generated<string>;
+  tenant_id: string;
+  updated_at: Timestamp;
+}
+
+export interface DatasetAnomalies {
+  anomaly_type: string;
+  column_name: string;
+  created_at: Generated<Timestamp>;
+  dataset_version_id: string;
+  detail: string;
+  id: string;
+  row_number: number;
+  tenant_id: string;
+  value: string | null;
+}
+
+export interface DatasetProfiles {
+  column_count: number;
+  dataset_version_id: string;
+  id: string;
+  overall_quality_score: number;
+  profiled_at: Generated<Timestamp>;
+  profiled_by_user_id: string | null;
+  row_count: number;
+  tenant_id: string;
+}
+
 export interface Datasets {
   created_at: Generated<Timestamp>;
   id: string;
@@ -63,9 +135,60 @@ export interface DatasetVersions {
   row_count: number | null;
   source_artifact_checksum: string;
   source_artifact_ref: string;
+  source_filename: string | null;
   status: Generated<string>;
   tenant_id: string;
   version_number: number;
+}
+
+export interface FieldProfiles {
+  column_name: string;
+  completeness: number;
+  conformity: number;
+  consistency: number;
+  created_at: Generated<Timestamp>;
+  dataset_profile_id: string;
+  distinct_count: number;
+  id: string;
+  inferred_type: string;
+  null_count: number;
+  quality_score: number;
+  row_count: number;
+  semantic_type: string | null;
+  tenant_id: string;
+  uniqueness: number;
+  validity: number;
+}
+
+export interface IngestionRejectedRows {
+  created_at: Generated<Timestamp>;
+  id: string;
+  ingestion_run_id: string;
+  raw_content: string;
+  reason: string;
+  row_number: number;
+  tenant_id: string;
+}
+
+export interface IngestionRuns {
+  accepted_row_count: number | null;
+  completed_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+  created_by_user_id: string | null;
+  dataset_id: string;
+  dataset_version_id: string | null;
+  detected_delimiter: string | null;
+  detected_encoding: string | null;
+  error_message: string | null;
+  has_header: boolean | null;
+  id: string;
+  project_id: string;
+  rejected_row_count: number | null;
+  row_count: number | null;
+  source_filename: string;
+  source_format: string;
+  status: Generated<string>;
+  tenant_id: string;
 }
 
 export interface Policies {
@@ -112,8 +235,17 @@ export interface Users {
 export interface DB {
   _migrations: _Migrations;
   audit_events: AuditEvents;
+  bp_addresses: BpAddresses;
+  bp_identifiers: BpIdentifiers;
+  bp_relationships: BpRelationships;
+  business_partners: BusinessPartners;
+  dataset_anomalies: DatasetAnomalies;
+  dataset_profiles: DatasetProfiles;
   dataset_versions: DatasetVersions;
   datasets: Datasets;
+  field_profiles: FieldProfiles;
+  ingestion_rejected_rows: IngestionRejectedRows;
+  ingestion_runs: IngestionRuns;
   policies: Policies;
   projects: Projects;
   tenants: Tenants;

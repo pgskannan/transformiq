@@ -37,6 +37,60 @@ export interface Project {
   created_at: string;
 }
 
+// Shapes below mirror backend/src/db/types.ts's generated Kysely interfaces for the
+// corresponding tables — kept as plain interfaces here (not shared/imported across the
+// frontend/backend boundary) since the frontend build has no dependency on the backend
+// package; see AGENTS.md on keeping the two apps independently deployable.
+export interface Dataset {
+  id: string;
+  project_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DatasetVersion {
+  id: string;
+  dataset_id: string;
+  version_number: number;
+  row_count: number | null;
+  created_at: string;
+}
+
+export interface DatasetProfile {
+  id: string;
+  dataset_version_id: string;
+  row_count: number;
+  column_count: number;
+  overall_quality_score: number;
+  profiled_at: string;
+}
+
+export interface FieldProfile {
+  id: string;
+  column_name: string;
+  inferred_type: string;
+  semantic_type: string | null;
+  row_count: number;
+  null_count: number;
+  distinct_count: number;
+  completeness: number;
+  uniqueness: number;
+  validity: number;
+  conformity: number;
+  consistency: number;
+  quality_score: number;
+}
+
+export interface DatasetAnomaly {
+  id: string;
+  row_number: number;
+  column_name: string;
+  anomaly_type: "null" | "malformed_value" | "outlier" | "suspicious_pattern";
+  value: string | null;
+  detail: string;
+}
+
 export const api = {
   health: () => request<{ status: string; service: string; version: string }>("/v1/health"),
 
@@ -77,6 +131,43 @@ export const api = {
     request<Project>(
       "/v1/projects",
       { method: "POST", body: JSON.stringify(input) },
+      token
+    ),
+
+  // TQ-029 (Data Profile screen) additions below. See backend/src/routes/datasets.ts,
+  // ingestion.ts, and profiling.ts for the corresponding server-side endpoints.
+  listDatasets: (token: string, projectId: string) =>
+    request<{ datasets: Dataset[] }>(`/v1/projects/${projectId}/datasets`, {}, token),
+
+  listDatasetVersions: (token: string, datasetId: string) =>
+    request<{ versions: DatasetVersion[] }>(`/v1/datasets/${datasetId}/versions`, {}, token),
+
+  // Returns null (not a thrown ApiError) for the common, expected "not profiled yet" case —
+  // GET .../profile 404s when no profiling run has completed for this version, which is a
+  // normal state for a just-ingested version, not an error the UI should alarm on.
+  getDatasetProfile: async (
+    token: string,
+    datasetVersionId: string
+  ): Promise<{ profile: DatasetProfile; fields: FieldProfile[] } | null> => {
+    try {
+      return await request(`/v1/dataset-versions/${datasetVersionId}/profile`, {}, token);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  getDatasetAnomalies: (token: string, datasetVersionId: string) =>
+    request<{ anomalies: DatasetAnomaly[] }>(
+      `/v1/dataset-versions/${datasetVersionId}/anomalies`,
+      {},
+      token
+    ),
+
+  triggerProfiling: (token: string, datasetVersionId: string) =>
+    request<{ profile: DatasetProfile; anomalyCount: number }>(
+      "/v1/profiling-runs",
+      { method: "POST", body: JSON.stringify({ datasetVersionId }) },
       token
     ),
 };

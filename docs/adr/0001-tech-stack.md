@@ -42,11 +42,26 @@ an ADR before feature work depends on it (see `AGENTS.md`, "Stack note").
 
 - Every service (backend, and later independently-scaled workers per AGENTS.md §1.5/§6) is a
   Node/TypeScript Cloud Run service using the same base image pattern (see `backend/Dockerfile`).
-- Prisma's migration files become the single source of truth for schema changes — do not
-  hand-edit tables outside a Prisma migration except for the Postgres RLS policies, which Prisma
-  cannot express natively (see ADR 0002).
+- `backend/db/migrations/*.sql` (hand-written, applied by `db/migrate.ts`) is the single
+  source of truth for schema changes — not a Prisma migration, since Prisma was rejected
+  above. Every migration includes its own RLS policy statements where relevant (see ADR
+  0002); there's no separate "ORM migration vs. RLS policy" split to worry about since
+  nothing here is ORM-generated.
 - This is a monorepo (`backend/`, `frontend/`, `infra/`) for Sprint 1. Revisit if independent
   service scaling (AGENTS.md §6, Deployment Rules) needs separate repos/CI pipelines per service.
+
+## Addendum (Sprint 3): kysely pinned at 0.28.x, not latest
+
+Kysely 0.29+ dropped its CommonJS build entirely (`package.json` `"type": "module"` with no
+`require` export condition) — installing it broke every backend test with `SyntaxError:
+Unexpected token 'export'` under ts-jest's CJS transform, discovered directly while upgrading
+dependencies to clear high-severity SQL-injection advisories (GHSA-wmrf-hv6w-mr66,
+GHSA-8cpq-38p9-67gx, GHSA-pv5w-4p9q-p3v2) that affected kysely `<=0.28.13`/`<0.28.17`. Pinned
+to `0.28.17` instead — the first version that both patches all three advisories and still
+ships a dual CJS/ESM build (`exports["."].require` points at `dist/cjs/index.js`). Revisit
+this pin only alongside a deliberate decision to move the backend to ESM (bigger change,
+touches `tsconfig.json` module settings, `ts-jest`/Jest ESM config, and every relative
+import) — don't bump kysely past 0.28.x casually.
 
 ## Open questions for the team
 
