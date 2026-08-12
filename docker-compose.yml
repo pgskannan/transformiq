@@ -1,0 +1,45 @@
+version: "3.9"
+
+# Local dev only. Cloud SQL for PostgreSQL is the target in GCP (see docs/adr/0002 and
+# infra/terraform/modules/cloudsql) — this Postgres container stands in for it locally.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: transformiq
+      POSTGRES_PASSWORD: transformiq_dev_only
+      POSTGRES_DB: transformiq
+    ports:
+      - "5432:5432"
+    volumes:
+      - transformiq_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transformiq"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://transformiq:transformiq_dev_only@postgres:5432/transformiq?schema=public
+      PORT: "8080"
+      JWT_ISSUER: "http://localhost:8080/dev-issuer"
+      NODE_ENV: development
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8080
+    ports:
+      - "5173:5173"
+
+volumes:
+  transformiq_pg_data:
