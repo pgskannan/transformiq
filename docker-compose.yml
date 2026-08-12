@@ -25,21 +25,32 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://transformiq:transformiq_dev_only@postgres:5432/transformiq?schema=public
+      DATABASE_URL: postgresql://transformiq_app:transformiq_dev_only@postgres:5432/transformiq?schema=public
+      MIGRATIONS_DATABASE_URL: postgresql://transformiq:transformiq_dev_only@postgres:5432/transformiq?schema=public
       PORT: "8080"
       JWT_ISSUER: "http://localhost:8080/dev-issuer"
       NODE_ENV: development
+      PLATFORM_ADMIN_API_KEY: local-dev-platform-admin-key
     ports:
       - "8080:8080"
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # Vite inlines this at build time, so it must be a build arg, not `environment:`
+        # (which would have no effect on an already-built static/nginx image). Points at
+        # localhost:8080 since that's where the backend is reachable from the host browser
+        # hitting this container's published port, not from inside the compose network.
+        VITE_API_BASE_URL: http://localhost:8080
     depends_on:
       - backend
-    environment:
-      VITE_API_BASE_URL: http://localhost:8080
+    # nginx (frontend/Dockerfile's runtime stage) listens on port 80 inside the container —
+    # not 5173, which is only the Vite *dev* server's port and isn't used by this compose
+    # path. Both this port mismatch and the build-arg issue above were found and fixed this
+    # sprint; not verified against a running Docker daemon (none available — see README).
     ports:
-      - "5173:5173"
+      - "5173:80"
 
 volumes:
   transformiq_pg_data:

@@ -22,8 +22,15 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://transformiq:transformiq_dev_only@localhost:5432/transformiq?schema=public
+      # App runs/tests as the least-privilege role; migrations run as the schema owner
+      # (POSTGRES_USER on the official postgres image is a full superuser) — see
+      # db/migrations/0004_least_privilege_app_role.sql. This means CI exercises the app
+      # under the same restricted role production would use, not an owner/superuser
+      # connection that would mask a missing GRANT.
+      DATABASE_URL: postgresql://transformiq_app:transformiq_dev_only@localhost:5432/transformiq?schema=public
+      MIGRATIONS_DATABASE_URL: postgresql://transformiq:transformiq_dev_only@localhost:5432/transformiq?schema=public
       NODE_ENV: test
+      PLATFORM_ADMIN_API_KEY: ci-platform-admin-key
     defaults:
       run:
         working-directory: backend
@@ -58,3 +65,32 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm test
       - run: npm run build
+
+  # TQ-019: "CI blocks merge on any RBAC, tenant-isolation, or secret-scan failure."
+  # The RBAC and tenant-isolation half of that is already covered — those are real jest
+  # suites inside the `backend` job above (src/__tests__/rbac.test.ts,
+  # tenant-isolation.test.ts), and a normal failing-job GitHub branch protection rule blocks
+  # merge on them same as any other test failure. This job covers the other half: secrets
+  # committed to the repo.
+  #
+  # Uses the raw open-source gitleaks binary directly rather than a marketplace Action
+  # wrapper (e.g. gitleaks/gitleaks-action) — the wrapper action added an org license
+  # requirement in 2023; the underlying CLI itself stays MIT-licensed and free. Verified by
+  # actually downloading this exact release and running it against this exact repo (both
+  # full git history and the working tree) while building this scaffold — see AGENTS.md
+  # commit for the "no leaks found" result this step is expected to reproduce.
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history, not just the latest commit
+      - name: Install gitleaks
+        run: |
+          curl -sSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+      - name: Scan git history for committed secrets
+        run: gitleaks detect --source . --redact --exit-code 1
+      - name: Scan working tree for uncommitted secrets
+        run: gitleaks detect --source . --no-git --redact --exit-code 1

@@ -10,9 +10,13 @@ import { Client } from "pg";
 import "dotenv/config";
 
 async function main() {
-  const databaseUrl = process.env.DATABASE_URL;
+  // Migrations need DDL/role-management privilege the runtime app role deliberately does
+  // not have (see 0004_least_privilege_app_role.sql) — run them as the schema-owning role,
+  // not as transformiq_app. Falls back to DATABASE_URL so a single-role setup (e.g. before
+  // 0004 has ever run) still works.
+  const databaseUrl = process.env.MIGRATIONS_DATABASE_URL ?? process.env.DATABASE_URL;
   if (!databaseUrl) {
-    throw new Error("DATABASE_URL is not set");
+    throw new Error("MIGRATIONS_DATABASE_URL (or DATABASE_URL) is not set");
   }
 
   const client = new Client({ connectionString: databaseUrl });

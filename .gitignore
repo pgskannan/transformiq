@@ -9,3 +9,8 @@ coverage/
 *.tfstate
 *.tfstate.backup
 .DS_Store
+
+# Local dev/test object storage (backend/src/lib/objectStorage.ts's LocalObjectStorage) —
+# content-addressed test fixtures written by the dataset-immutability tests, never meant to
+# be committed. Real "raw data" storage in any deployed environment is GCS, not this.
+backend/.data/

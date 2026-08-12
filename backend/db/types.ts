@@ -45,6 +45,29 @@ export interface AuditEvents {
   tenant_id: string;
 }
 
+export interface Datasets {
+  created_at: Generated<Timestamp>;
+  id: string;
+  name: string;
+  project_id: string;
+  tenant_id: string;
+  updated_at: Timestamp;
+}
+
+export interface DatasetVersions {
+  created_at: Generated<Timestamp>;
+  created_by_user_id: string | null;
+  dataset_id: string;
+  id: string;
+  parent_version_id: string | null;
+  row_count: number | null;
+  source_artifact_checksum: string;
+  source_artifact_ref: string;
+  status: Generated<string>;
+  tenant_id: string;
+  version_number: number;
+}
+
 export interface Policies {
   created_at: Generated<Timestamp>;
   id: string;
@@ -89,6 +112,8 @@ export interface Users {
 export interface DB {
   _migrations: _Migrations;
   audit_events: AuditEvents;
+  dataset_versions: DatasetVersions;
+  datasets: Datasets;
   policies: Policies;
   projects: Projects;
   tenants: Tenants;

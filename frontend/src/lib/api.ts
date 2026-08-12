@@ -47,14 +47,22 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  createTenant: (name: string) =>
+  // Dev-only tenant bootstrap (see pages/DevBootstrapTenant.tsx — not reachable in a
+  // production build). Real tenant provisioning is an out-of-band platform-admin operation
+  // (backend TQ-011/tenants.ts requires x-platform-admin-key), not something a customer's
+  // own login page should ever be able to trigger — that's why this is a separate function
+  // taking the key explicitly rather than something Login/createProject can reach.
+  createTenant: (name: string, platformAdminKey: string) =>
     request<{ id: string; name: string }>("/v1/tenants", {
       method: "POST",
+      headers: { "x-platform-admin-key": platformAdminKey },
       body: JSON.stringify({ name }),
     }),
 
   listProjects: (token: string) =>
     request<{ projects: Project[] }>("/v1/projects", {}, token),
+
+  getProject: (token: string, id: string) => request<Project>(`/v1/projects/${id}`, {}, token),
 
   createProject: (
     token: string,

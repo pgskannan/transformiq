@@ -22,6 +22,12 @@ resource "google_sql_database_instance" "primary" {
     ip_configuration {
       ipv4_enabled    = false
       private_network = var.network_id
+      # TQ-016 encryption-in-transit: reject unencrypted client connections outright rather
+      # than merely offering TLS. (Provider ~5.40's ssl_mode replaces the deprecated
+      # require_ssl boolean.) DATABASE_URL / MIGRATIONS_DATABASE_URL must include
+      # sslmode=require (or stronger) once pointed at a real instance, or the server refuses
+      # the connection rather than silently downgrading it.
+      ssl_mode = "ENCRYPTED_ONLY"
     }
     backup_configuration {
       enabled                        = true
@@ -29,6 +35,11 @@ resource "google_sql_database_instance" "primary" {
     }
     user_labels = var.labels
   }
+  # Encryption at rest: Cloud SQL encrypts all data at rest by default with Google-managed
+  # keys — no config needed for that baseline (see docs/security/encryption-checklist.md). A
+  # customer-managed key (CMEK) via `encryption_key_name` is available as an upgrade if a
+  # security/compliance review calls for it; not defaulted on here since it adds real
+  # operational burden (key rotation, availability coupling to Cloud KMS) nobody's asked for.
 
   deletion_protection = true # flip to false only deliberately, e.g. for a throwaway dev instance
 }

@@ -10,9 +10,10 @@ let secretManagerClient: import("@google-cloud/secret-manager").SecretManagerSer
 
 async function getSecretManagerClient() {
   if (!secretManagerClient) {
-    // Lazy import: the @google-cloud/secret-manager package is NOT a dependency of this
-    // scaffold yet (Sprint 1 has no live GCP project to call). Add it
-    // (`npm install @google-cloud/secret-manager`) when wiring this up for real in Sprint 2+.
+    // Lazy import, same pattern as objectStorage.ts's GcsObjectStorage: the
+    // @google-cloud/secret-manager package is a real dependency (package.json), but this
+    // path has never run against a live GCP project — no GCP credentials have been
+    // available in any environment this scaffold has been built/tested in so far.
     const { SecretManagerServiceClient } = await import("@google-cloud/secret-manager");
     secretManagerClient = new SecretManagerServiceClient();
   }

@@ -2,7 +2,7 @@
 // shell + tenant-scoped API call works; full dashboard content (readiness, blockers, cost,
 // progress) is later-sprint scope.
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { api, type Project } from "../lib/api";
 
@@ -39,13 +39,21 @@ export function Dashboard() {
             {email} · tenant {tenantId}
           </p>
         </div>
-        <button onClick={() => { logout(); navigate("/login"); }}>Sign out</button>
+        <div>
+          <Link to="/projects/new" style={{ marginRight: 12 }}>
+            <button>New project</button>
+          </Link>
+          <button onClick={() => { logout(); navigate("/login"); }}>Sign out</button>
+        </div>
       </header>
 
       {error && <p style={{ color: "crimson" }}>{error}</p>}
 
       {projects.length === 0 ? (
-        <p>No projects yet for this tenant.</p>
+        <p>
+          No projects yet for this tenant. <Link to="/projects/new">Create one</Link> to get
+          started.
+        </p>
       ) : (
         <ul>
           {projects.map((p) => (
