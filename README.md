@@ -18,10 +18,14 @@ for the P0 evidence (Sprint 1+2, mapped item by item) and the per-feature ADR ad
 `docs/adr/0002-gcp-architecture-and-tenancy.md` for the Sprint 3 and Sprint 4 design
 decisions and their documented scope tradeoffs.
 
-Sprint 5 (Vertex AI semantic matching, TQ-039/040) is the point this project actually needs a
-real GCP project — Sprint 4 required none, and per explicit direction none was created for
-it. See the Sprint 4 ADR addendums below for how that was confirmed against the sprint plan
-before starting.
+Plus a **Sprint 5 slice (TQ-039/040)**, built for the
+[All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com/): real,
+working **AI-assisted semantic type resolution**. When the deterministic heuristics engine
+(`lib/semantics/engine.ts`) genuinely can't classify a column, the profiling job now calls
+Gemini — via [Genkit](https://genkit.dev), a Google Agent Framework — for a second-pass
+suggestion, surfaced in the Data Profile screen as a clearly-labeled, unapplied recommendation
+a steward reviews. See `docs/adr/0003-gemini-genkit-integration.md` for the full design
+rationale and "AI-assisted semantic type resolution" below for how to run it.
 
 ## What's actually verified vs. what's still ahead
 
@@ -167,6 +171,13 @@ that means concretely:
 - Cloud SQL `ssl_mode = "ENCRYPTED_ONLY"` and the GCS bucket versioning/retention-lock config
   — written into `infra/terraform/`, never applied. See `docs/security/encryption-checklist.md`.
 
+## Architecture
+
+![TransformIQ architecture diagram](docs/architecture-diagram.png)
+
+Purple = new for the Sprint 5 hackathon slice (Gemini via Genkit). See
+docs/adr/0003-gemini-genkit-integration.md for the design rationale.
+
 ## Repo layout
 
 ```
@@ -223,6 +234,52 @@ docker compose up --build
 > instance; the compose file itself just packages that into one command. Try it and open an
 > issue/fix it forward if the ports or health-check timing need adjustment on your machine.
 
+## AI-assisted semantic type resolution (Gemini + Genkit)
+
+Optional locally, real when configured — see `docs/adr/0003-gemini-genkit-integration.md` for
+the full design rationale.
+
+```bash
+# Get a free key: https://aistudio.google.com/apikey
+echo "GEMINI_API_KEY=your-key-here" >> backend/.env
+```
+
+That's it — no other setup. Ingest a CSV with a column the deterministic heuristics engine
+(`lib/semantics/engine.ts`) can't classify (e.g. a tax ID column with an unusual header name),
+profile it, and open the Data Profile screen: a purple "✨ AI suggests: ..." badge appears
+under that field's semantic type with a confidence score, and the model's reasoning + version
+on hover. Without a key, profiling still works exactly as before — the AI call is additive,
+never load-bearing (see `lib/semantics/aiResolver.ts`'s header comment).
+
+## Google Cloud deployment (Cloud Run)
+
+The backend has always shipped with a `Dockerfile` and `cloudbuild.yaml` (Sprint 1) but was
+never deployed against a real GCP project until this hackathon submission. To deploy:
+
+```bash
+# One-time setup
+gcloud config set project YOUR_PROJECT_ID
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com secretmanager.googleapis.com
+
+# Store the Gemini API key in Secret Manager (never in code/config — AGENTS.md Do-Not-Do #9)
+echo -n "your-gemini-api-key" | gcloud secrets create GEMINI_API_KEY --data-file=-
+
+# Build + deploy
+cd backend
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_GCP_PROJECT_ID=YOUR_PROJECT_ID,_REGION=us-central1,_AR_REPO=transformiq,_ENVIRONMENT=dev
+
+# Grant the Cloud Run service account access to the secret, then set it as an env var:
+gcloud run services update transformiq-backend-dev \
+  --region=us-central1 \
+  --set-secrets=GEMINI_API_KEY=GEMINI_API_KEY:latest \
+  --set-env-vars=GCP_PROJECT_ID=YOUR_PROJECT_ID
+```
+
+`lib/secrets.ts` automatically switches from `.env` to Secret Manager once `GCP_PROJECT_ID` is
+set — no code change needed between local dev and this deployment.
+
 ## Verification
 
 ```bash
@@ -261,12 +318,15 @@ still genuinely open, going into Sprint 5+:
   rewrites foreign keys or collapses the two rows — that's TQ-062 ("Remediation execution
   engine"), Sprint 7 scope, confirmed against the sprint plan before Sprint 4 was scoped.
   A `merge`-decided pair sits recorded and audited, waiting on that later engine.
-- **Entity resolution fuzzy matching is Postgres `pg_trgm`-only, no AI-assisted semantic
-  matching.** Vertex AI semantic matching (TQ-039/040) is Sprint 5 scope. Sprint 4's fuzzy
-  matcher catches typos/abbreviations/legal-suffix variants via trigram similarity; it will
-  not catch a genuinely different-looking name that's semantically the same entity (e.g. a
-  DBA name with no textual overlap to the legal name) — that's exactly the gap Sprint 5's
-  AI-assisted pass is scoped to close.
+- **Entity resolution fuzzy matching is still Postgres `pg_trgm`-only, no AI-assisted semantic
+  matching.** The Sprint 5 hackathon slice (below) added a real Gemini call for *semantic
+  type inference* (is this column an email? a tax ID?), not for *entity matching* (are these
+  two Business Partner names the same real-world entity?) — those are different TQ-039/040
+  sub-scopes that shared a tracking ID in the original plan. Sprint 4's fuzzy matcher still
+  catches typos/abbreviations/legal-suffix variants via trigram similarity only; it will not
+  catch a genuinely different-looking name that's semantically the same entity (e.g. a DBA
+  name with no textual overlap to the legal name) — that specific gap is still open, real
+  future work, not silently closed by this slice.
 - **Entity resolution scope is Business Partners only.** TQ-037 added the Supplier entity
   and BP linkage, but there is no separate Supplier-to-Supplier fuzzy/exact matching pass —
   a duplicate Supplier record under the *same* BP is caught by the hard-block/soft-flag logic
@@ -284,12 +344,12 @@ still genuinely open, going into Sprint 5+:
   real horizontal scaling and crash-durability. Swapping the queue implementation is
   Sprint 4+ scope; the job-handler interface was written to make that swap isolated to
   `lib/jobs/queue.ts` itself.
-- **Semantic type inference (TQ-026) is heuristics-only**, not AI-assisted. The SRS's stated
-  operating principle is "deterministic controls govern; AI handles semantic ambiguity" — the
-  intended second signal for columns a regex/keyword pass can't resolve is an
-  embeddings/LLM-assisted path backed by `lib/vertexAI.ts`, which has no live Vertex AI
-  project to call in this sandbox. The deterministic half ships now (100% on its golden
-  fixture set); the AI-assisted half is real, tracked future work, not silently skipped.
+- ~~Semantic type inference (TQ-026) is heuristics-only, not AI-assisted~~ — **closed by the
+  Sprint 5 hackathon slice.** The deterministic engine (100% on its golden fixture set) still
+  runs first and governs for every column it can classify; genuinely ambiguous columns now get
+  a real Gemini-assisted second-pass suggestion (see "AI-assisted semantic type resolution"
+  below). Left here, struck through, so the history of this gap being opened and closed stays
+  visible rather than silently deleted.
 - **Business Partner relationship *discovery* doesn't exist yet.** TQ-028 built manual
   relationship creation (`POST /v1/business-partners/:id/relationships`) — a steward or an
   upstream process can record that two BPs are related, but nothing infers those
@@ -306,10 +366,12 @@ still genuinely open, going into Sprint 5+:
   audit trail. Adequate for the current threat model (internal-only, never reachable from
   customer-facing frontend code); flagged in `docs/security/encryption-checklist.md` as
   something to fix before onboarding real customers.
-- **No real GCP verification for anything infra-related** (Terraform, GCS, Cloud SQL TLS
-  enforcement, Secret Manager, Vertex AI) — no GCP credentials have been available in any
-  environment this scaffold has been built in. Everything there is reviewed IaC/code, not a
-  tested deployment. See `docs/p0-exit-checklist.md`'s "What could not be verified" section.
+- **No real GCP verification for the Terraform-defined infra** (GCS, Cloud SQL TLS
+  enforcement, Secret Manager, Pub/Sub) — still true as of this Sprint 5 slice for everything
+  except the new Gemini call itself (which uses API-key auth, not GCP-project-scoped infra —
+  see `docs/adr/0003-gemini-genkit-integration.md`) and the Cloud Run deployment covered
+  below. Terraform/GCS/Cloud SQL/Pub/Sub remain reviewed IaC/code, not a tested deployment.
+  See `docs/p0-exit-checklist.md`'s "What could not be verified" section.
 - **No live browser session has driven the frontend** — verified via jsdom component tests
   and a curl-driven backend E2E that mirrors what the frontend sends, not an actual click-
   through in Chrome/Playwright. Still true this sprint for the new Data Profile screen too.

@@ -208,6 +208,26 @@ export function DataProfile() {
                   <td style={{ padding: 8 }}>{f.inferred_type}</td>
                   <td style={{ padding: 8, color: f.semantic_type ? "#000" : "#8c959f" }}>
                     {f.semantic_type ?? "—"}
+                    {!f.semantic_type && f.ai_semantic_type && (
+                      // Deliberately a separate, visually distinct badge rather than filling
+                      // semantic_type's cell with the AI value directly — this is Gemini's
+                      // suggestion, not a confirmed classification (AGENTS.md Do-Not-Do rules
+                      // #1/#4: an AI recommendation is never auto-applied). Title attribute
+                      // carries the model's reasoning + version for a steward who wants it.
+                      <span
+                        title={`${f.ai_reasoning ?? ""} (${f.ai_model_version ?? "model unknown"})`}
+                        style={{
+                          display: "block",
+                          marginTop: 4,
+                          fontSize: 12,
+                          color: "#6639ba",
+                          cursor: "help",
+                        }}
+                      >
+                        ✨ AI suggests: <strong>{f.ai_semantic_type}</strong>{" "}
+                        {f.ai_confidence != null && `(${formatScore(f.ai_confidence)} confidence)`}
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: 8 }}>{formatScore(f.completeness)}</td>
                   <td style={{ padding: 8 }}>{formatScore(f.validity)}</td>

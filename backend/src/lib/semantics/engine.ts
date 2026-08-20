@@ -1,12 +1,11 @@
 // Semantic field type inference v1 (TQ-026, FR-PROF-003): "Infer semantic field types."
-// Heuristics-only in this sandbox — the SRS's stated operating principle is "deterministic
-// controls govern; AI handles semantic ambiguity" (an embeddings/LLM-assisted path, backed
-// by the Vertex AI stub from lib/vertexAI.ts, is the intended eventual second signal for
-// ambiguous columns a pure regex/keyword pass can't resolve) but there is no live Vertex AI
-// project available in this sandbox to call. Rather than fake that call or skip semantic
-// inference entirely, this ships the deterministic half on its own, with the AI-assisted
-// half tracked as a real, documented gap (see README "Known gaps") — same pattern as the
-// Pub/Sub consumer gap (ADR 0002 addendum) and the Vertex AI stub itself.
+// Deterministic heuristics only, by design — the SRS's operating principle is "deterministic
+// controls govern; AI handles semantic ambiguity" (AGENTS.md §1.6). This module returns
+// `null` for a column it genuinely can't classify rather than guessing; callers that want the
+// AI-assisted second pass for that ambiguous case call lib/semantics/aiResolver.ts's
+// resolveAmbiguousSemanticType() instead (see lib/jobs/profilingJob.ts for the wiring) — kept
+// as a separate module so this file stays what it always was: pure, synchronous, no-I/O
+// heuristics, easy to unit test without mocking anything.
 //
 // Design: for each candidate semantic type, a NAME hint (does the column name suggest this
 // type?) and, where a reliable one exists, a VALUE validator (do the actual values look

@@ -71,6 +71,14 @@ export interface FieldProfile {
   column_name: string;
   inferred_type: string;
   semantic_type: string | null;
+  // Gemini-assisted second-pass suggestion (TQ-039/040) for columns semantic_type couldn't
+  // classify deterministically — always a suggestion for a steward to confirm, never applied
+  // to semantic_type itself. Optional (not just nullable): older test fixtures and any
+  // pre-migration API response won't have these keys at all, not just null values for them.
+  ai_semantic_type?: string | null;
+  ai_confidence?: number | null;
+  ai_reasoning?: string | null;
+  ai_model_version?: string | null;
   row_count: number;
   null_count: number;
   distinct_count: number;

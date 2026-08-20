@@ -159,6 +159,10 @@ export interface EntityMatches {
 }
 
 export interface FieldProfiles {
+  ai_confidence: number | null;
+  ai_model_version: string | null;
+  ai_reasoning: string | null;
+  ai_semantic_type: string | null;
   column_name: string;
   completeness: number;
   conformity: number;

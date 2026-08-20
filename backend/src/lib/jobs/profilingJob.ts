@@ -19,6 +19,7 @@ import { ingestFile } from "../ingestion/engine";
 import { getObjectStorage } from "../objectStorage";
 import { profileColumns } from "../profiling/engine";
 import { inferSemanticType } from "../semantics/engine";
+import { resolveAmbiguousSemanticType } from "../semantics/aiResolver";
 import { registerJobHandler } from "./queue";
 
 export const PROFILING_JOB_TYPE = "profiling.process";
@@ -79,37 +80,61 @@ export async function processProfilingJob(rawPayload: unknown): Promise<void> {
       .returningAll()
       .executeTakeFirstOrThrow();
 
-    if (profile.fields.length > 0) {
-      await trx
-        .insertInto("field_profiles")
-        .values(
-          profile.fields.map((f, colIndex) => {
-            // TQ-026: heuristics-only semantic type inference (see lib/semantics/engine.ts's
-            // header comment for why there's no embeddings/AI-assisted second pass here) —
-            // reuses the same per-column raw values profiling/anomaly detection already have,
-            // no extra re-parse.
-            const rawValues = ingested.dataRows.map((row) => row[colIndex] ?? "");
-            const semanticType = inferSemanticType(f.columnName, f.inferredType, rawValues);
-            return {
-              id: randomUUID(),
-              tenant_id: tenantId,
-              dataset_profile_id: datasetProfile.id,
-              column_name: f.columnName,
-              inferred_type: f.inferredType,
-              semantic_type: semanticType,
-              row_count: f.rowCount,
-              null_count: f.nullCount,
-              distinct_count: f.distinctCount,
-              completeness: f.completeness,
-              uniqueness: f.uniqueness,
-              validity: f.validity,
-              conformity: f.conformity,
-              consistency: f.consistency,
-              quality_score: f.qualityScore,
-            };
-          })
-        )
-        .execute();
+    // TQ-026/TQ-039-040: deterministic heuristics first (lib/semantics/engine.ts), then — only
+    // for the columns that came back genuinely ambiguous (null) — a Gemini-assisted second
+    // pass (lib/semantics/aiResolver.ts). This is the cost-ascending routing AGENTS.md §1.6
+    // requires: most columns never reach the AI call at all, and even for the ones that do,
+    // a failed/unconfigured call degrades to no suggestion rather than blocking the job (see
+    // aiResolver.ts header comment).
+    let aiSuggestionCount = 0;
+    let aiModelVersion: string | null = null;
+    const fieldRows = await Promise.all(
+      profile.fields.map(async (f, colIndex) => {
+        const rawValues = ingested.dataRows.map((row) => row[colIndex] ?? "");
+        const semanticType = inferSemanticType(f.columnName, f.inferredType, rawValues);
+
+        const aiSuggestion =
+          semanticType === null
+            ? await resolveAmbiguousSemanticType({
+                columnName: f.columnName,
+                inferredType: f.inferredType,
+                rawValues,
+              })
+            : null;
+        if (aiSuggestion) {
+          aiSuggestionCount += 1;
+          aiModelVersion = aiSuggestion.modelVersion;
+        }
+
+        return {
+          id: randomUUID(),
+          tenant_id: tenantId,
+          dataset_profile_id: datasetProfile.id,
+          column_name: f.columnName,
+          inferred_type: f.inferredType,
+          semantic_type: semanticType,
+          // AI suggestion columns (migration 0013) are deliberately separate from
+          // semantic_type above: this is a recommendation for a steward to review, never
+          // written to the deterministic column itself (AGENTS.md Do-Not-Do rules #1, #4).
+          ai_semantic_type: aiSuggestion?.semanticType ?? null,
+          ai_confidence: aiSuggestion?.confidence ?? null,
+          ai_reasoning: aiSuggestion?.reasoning ?? null,
+          ai_model_version: aiSuggestion?.modelVersion ?? null,
+          row_count: f.rowCount,
+          null_count: f.nullCount,
+          distinct_count: f.distinctCount,
+          completeness: f.completeness,
+          uniqueness: f.uniqueness,
+          validity: f.validity,
+          conformity: f.conformity,
+          consistency: f.consistency,
+          quality_score: f.qualityScore,
+        };
+      })
+    );
+
+    if (fieldRows.length > 0) {
+      await trx.insertInto("field_profiles").values(fieldRows).execute();
     }
 
     if (anomalies.length > 0) {
@@ -136,7 +161,15 @@ export async function processProfilingJob(rawPayload: unknown): Promise<void> {
       action: "dataset_version.profiled",
       entityType: "DatasetProfile",
       entityId: datasetProfile.id,
-      newValue: { ...datasetProfile, fieldCount: profile.fields.length, anomalyCount: anomalies.length },
+      newValue: {
+        ...datasetProfile,
+        fieldCount: profile.fields.length,
+        anomalyCount: anomalies.length,
+        aiSuggestionCount,
+      },
+      // FR-AUD-004/FR-AI-003: record which model produced any AI-influenced part of this
+      // change. Null when no field was ambiguous enough to reach the AI resolver at all.
+      modelVersion: aiModelVersion,
     });
   });
 }
