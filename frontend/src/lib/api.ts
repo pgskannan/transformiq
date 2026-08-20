@@ -113,6 +113,8 @@ export interface MatchEvidence {
   signals: MatchSignal[];
 }
 
+export type MatchRecommendation = "merge" | "keep_separate" | "uncertain";
+
 export interface EntityMatchSummary {
   id: string;
   match_method: "exact" | "fuzzy";
@@ -126,6 +128,15 @@ export interface EntityMatchSummary {
   business_partner_name: string;
   candidate_business_partner_id: string;
   candidate_business_partner_name: string;
+  // Gemini-assisted second opinion (Sprint 5 continuation) for fuzzy candidates that land in
+  // aiAdjudicator.ts's ambiguous confidence band — always a recommendation for a steward to
+  // weigh, never applied to `decision` itself. Optional (not just nullable), same reasoning as
+  // FieldProfile's ai_* fields: older test fixtures and any pre-migration API response won't
+  // have these keys at all.
+  ai_recommendation?: MatchRecommendation | null;
+  ai_confidence?: number | null;
+  ai_reasoning?: string | null;
+  ai_model_version?: string | null;
 }
 
 export interface BusinessPartnerAddress {

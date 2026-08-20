@@ -19,13 +19,26 @@ for the P0 evidence (Sprint 1+2, mapped item by item) and the per-feature ADR ad
 decisions and their documented scope tradeoffs.
 
 Plus a **Sprint 5 slice (TQ-039/040)**, built for the
-[All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com/): real,
-working **AI-assisted semantic type resolution**. When the deterministic heuristics engine
-(`lib/semantics/engine.ts`) genuinely can't classify a column, the profiling job now calls
-Gemini — via [Genkit](https://genkit.dev), a Google Agent Framework — for a second-pass
-suggestion, surfaced in the Data Profile screen as a clearly-labeled, unapplied recommendation
-a steward reviews. See `docs/adr/0003-gemini-genkit-integration.md` for the full design
-rationale and "AI-assisted semantic type resolution" below for how to run it.
+[All Things Agentic Hackathon](https://allthingsagentichackathon.devpost.com/): two real,
+working AI features, both named explicitly in AGENTS.md §1.6/FR-AI-001's scope
+("normalization, entity resolution, classification, and mapping"), same architecture and
+governance pattern applied to two different judgment calls.
+
+- **AI-assisted semantic type resolution** ("classification"). When the deterministic
+  heuristics engine (`lib/semantics/engine.ts`) genuinely can't classify a column, the
+  profiling job now calls Gemini — via [Genkit](https://genkit.dev), a Google Agent
+  Framework — for a second-pass suggestion, surfaced in the Data Profile screen as a
+  clearly-labeled, unapplied recommendation a steward reviews. See
+  `docs/adr/0003-gemini-genkit-integration.md` for the full design rationale and
+  "AI-assisted semantic type resolution" below for how to run it.
+- **AI-assisted entity match adjudication** ("entity resolution"). When the deterministic
+  fuzzy matcher (`lib/matching/engine.ts`, pg_trgm name/address similarity) finds a candidate
+  duplicate Business Partner pair whose confidence lands in a genuinely ambiguous band, the
+  match-detection run now calls the same Gemini/Genkit integration for a second opinion —
+  `merge` / `keep_separate` / `uncertain` plus reasoning — surfaced in the BP/Supplier
+  Resolution screen as a separate, unapplied recommendation next to (never inside) the
+  governed `decision` field. See `docs/adr/0003-gemini-genkit-integration.md`'s addendum and
+  "AI-assisted entity match adjudication" below.
 
 ## What's actually verified vs. what's still ahead
 
@@ -35,9 +48,14 @@ that means concretely:
 
 **Verified for real, in this repo, right now:**
 - Backend builds (`tsc`), lints (`eslint`), and passes its full test suite (**25 suites, 157
-  tests**) against a **real local Postgres 16**, running as the actual least-privilege
-  `transformiq_app` role the production app would use — not a superuser connection that
-  could mask a missing GRANT.
+  tests**, plus a Sprint 5 continuation adding `lib/matching/__tests__/aiAdjudicator.test.ts`
+  — 11 more mocked unit tests, same "mock the one construction point" pattern as
+  `aiResolver.test.ts` — for **26 suites, 168 tests**) against a **real local Postgres 16**,
+  running as the actual least-privilege `transformiq_app` role the production app would use —
+  not a superuser connection that could mask a missing GRANT. The new suite was verified with
+  `npx jest` (passes standalone, mocked, no DB needed) plus `tsc`/`eslint` clean in this
+  sandbox; re-run the full suite against a live Postgres before treating it as re-verified
+  end to end, same "what's actually verified" discipline this README already holds itself to.
 - Real CSV and XLSX ingestion (TQ-021/TQ-022): multipart file upload, character-encoding
   detection, delimiter sniffing, header-row detection, per-column type inference, and
   rejected-row diagnostics — all against real parsed files, not a JSON+base64 stand-in.
@@ -94,7 +112,26 @@ that means concretely:
   `merge` decision requires `approve` permission, not just `modify`; denial is proven by
   three layered tests (unauthenticated 401, STEWARD-denied-with-persisted-audit-event
   verified by direct DB query since no Audit Explorer exists yet, VIEWER-denied) plus the
-  frontend surfacing the backend's own denial message rather than a generic error.
+  frontend surfacing the backend's own denial message rather than a generic error. The new
+  Gemini-assisted `ai_recommendation` (below) does not touch this guardrail at all — it is a
+  suggestion stored in separate columns, never a candidate value for `decision` itself, so a
+  `merge` still requires the same human + `approve` permission regardless of what the AI
+  suggested.
+- **AI-assisted entity match adjudication** (Sprint 5 hackathon slice, TQ-039/040's sibling
+  slice, `lib/matching/aiAdjudicator.ts`, migration `0014_ai_entity_match_adjudication.sql`)
+  — for fuzzy candidates whose confidence lands in `[0.5, 0.9)` (genuinely ambiguous —
+  outside that band the deterministic score is already either too weak to act on or already
+  strong enough that a second opinion adds little), the match-detection run now calls Gemini
+  for a `merge` / `keep_separate` / `uncertain` recommendation plus reasoning, stored in new
+  `ai_recommendation`/`ai_confidence`/`ai_reasoning`/`ai_model_version` columns — never
+  written to `decision`. 11 mocked unit tests (`lib/matching/__tests__/aiAdjudicator.test.ts`)
+  cover the confidence-band boundary logic, structured-output parsing, degradation to `null`
+  on an unconfigured key or a schema-validation failure, and a privacy-shaped assertion that
+  the prompt carries primary name/city/region/postal/country but never a street address line
+  or an identifier-shaped value. See "AI-assisted entity match adjudication" below for how to
+  run it, and `docs/adr/0003-gemini-genkit-integration.md`'s addendum for the design
+  rationale (including why this module sends real name/location text, unlike semantic type
+  resolution's shape-only approach).
 - BP field normalization (TQ-036, FR-BP-004) — a pure, unit-tested function library
   (11 tests) used only at match time, explicitly never auto-applied to stored BP records;
   the "no real customer data dictionary exists yet" gap is documented rather than assumed.
@@ -161,22 +198,19 @@ that means concretely:
   dev-token path has ever actually been exercised.
 - Secret Manager — `src/lib/secrets.ts` falls back to `.env` locally; the Secret Manager
   branch has never run against a real project.
-- Vertex AI — `src/lib/vertexAI.ts` is a typed stub; both functions throw until Sprint 5
-  wires them up for real (TQ-039/TQ-040). Semantic type inference (TQ-026) and entity
-  resolution fuzzy matching (TQ-032, Sprint 4) both ship as deterministic/Postgres-native
-  engines that don't call it — confirmed against the sprint plan that neither needed to, and
-  no GCP project has been created yet as a result — see "Known gaps".
+- Vertex AI — `src/lib/vertexAI.ts` was a typed stub whose functions always threw; Sprint 5
+  wires `generate()` up for real (TQ-039/TQ-040), and it is now the single shared call point
+  for **two** features: semantic type resolution (`lib/semantics/aiResolver.ts`) and entity
+  match adjudication (`lib/matching/aiAdjudicator.ts`). `embed()` remains unused/unwired — no
+  feature in this repo needs embeddings yet. Semantic type inference's deterministic pass
+  (TQ-026) and entity resolution's deterministic/fuzzy matching (TQ-032, Sprint 4) both still
+  ship as the primary, AI-free engines they always were — confirmed against the sprint plan
+  that Gemini is only ever a second-pass opinion on what those engines already flagged as
+  ambiguous, never a replacement for them — see "Known gaps".
 - GCS object storage (`GcsObjectStorage` in `src/lib/objectStorage.ts`) — implemented and
   code-reviewed, never run against a real bucket.
 - Cloud SQL `ssl_mode = "ENCRYPTED_ONLY"` and the GCS bucket versioning/retention-lock config
   — written into `infra/terraform/`, never applied. See `docs/security/encryption-checklist.md`.
-
-## Architecture
-
-![TransformIQ architecture diagram](docs/architecture-diagram.png)
-
-Purple = new for the Sprint 5 hackathon slice (Gemini via Genkit). See
-docs/adr/0003-gemini-genkit-integration.md for the design rationale.
 
 ## Repo layout
 
@@ -251,6 +285,36 @@ under that field's semantic type with a confidence score, and the model's reason
 on hover. Without a key, profiling still works exactly as before — the AI call is additive,
 never load-bearing (see `lib/semantics/aiResolver.ts`'s header comment).
 
+## AI-assisted entity match adjudication (Gemini + Genkit)
+
+Same `GEMINI_API_KEY` setup as above — no separate configuration. This is the second of the
+two AI features named in AGENTS.md §1.6/FR-AI-001's scope ("entity resolution," alongside
+"classification" above), same architecture and privacy posture applied to a different
+judgment call. See `docs/adr/0003-gemini-genkit-integration.md`'s addendum for the full
+design rationale.
+
+Seed two Business Partners whose names/locations are similar-but-not-identical enough to land
+in the deterministic fuzzy matcher's ambiguous confidence band (e.g. `"Acme Corp"` and
+`"Acme Corporation"` at the same city/postal code — a legal-suffix variant, not an exact
+string match), then run matching from the BP/Supplier Resolution screen ("Run matching"). A
+candidate pair whose blended confidence lands in `[0.5, 0.9)` now also carries a purple
+"✨ AI suggests: Merge (NN% confidence)" badge next to the deterministic evidence signals,
+plus the model's reasoning in an "AI second opinion" section when you open the pair's detail
+view. Hover the badge for the model version. This is a recommendation only — `decision` is
+still set exclusively via a steward's own PATCH action (still gated by the existing
+merge-requires-`approve` guardrail, unchanged by this feature); nothing here writes
+`decision` or auto-merges anything (AGENTS.md Do-Not-Do rules #1/#3/#4).
+
+Unlike semantic type resolution's structural "shape" abstraction, this module does send the
+actual primary name and city/region/postal/country of each side to Gemini — judging "is this
+the same real-world company" genuinely needs the text, and Business Partner name/location is
+Confidential commercial information (AGENTS.md §3.3), not the harder Restricted class that
+applies to personal/tax/banking data. It still deliberately never sends the street address
+line, tax IDs, or Supplier banking/contact fields — none of that is needed for the judgment,
+so none of it is sent. Without a key, or for any pair outside the ambiguous band, matching
+still works exactly as before — the AI call is additive, never load-bearing (see
+`lib/matching/aiAdjudicator.ts`'s header comment).
+
 ## Google Cloud deployment (Cloud Run)
 
 The backend has always shipped with a `Dockerfile` and `cloudbuild.yaml` (Sprint 1) but was
@@ -318,15 +382,19 @@ still genuinely open, going into Sprint 5+:
   rewrites foreign keys or collapses the two rows — that's TQ-062 ("Remediation execution
   engine"), Sprint 7 scope, confirmed against the sprint plan before Sprint 4 was scoped.
   A `merge`-decided pair sits recorded and audited, waiting on that later engine.
-- **Entity resolution fuzzy matching is still Postgres `pg_trgm`-only, no AI-assisted semantic
-  matching.** The Sprint 5 hackathon slice (below) added a real Gemini call for *semantic
-  type inference* (is this column an email? a tax ID?), not for *entity matching* (are these
-  two Business Partner names the same real-world entity?) — those are different TQ-039/040
-  sub-scopes that shared a tracking ID in the original plan. Sprint 4's fuzzy matcher still
-  catches typos/abbreviations/legal-suffix variants via trigram similarity only; it will not
-  catch a genuinely different-looking name that's semantically the same entity (e.g. a DBA
-  name with no textual overlap to the legal name) — that specific gap is still open, real
-  future work, not silently closed by this slice.
+- ~~Entity resolution fuzzy matching is still Postgres `pg_trgm`-only, no AI-assisted second
+  opinion~~ — **partially closed by the Sprint 5 hackathon slice.** Be precise about what
+  changed and what didn't: the Sprint 5 slice added `lib/matching/aiAdjudicator.ts`, which
+  gives a Gemini-assisted `merge`/`keep_separate`/`uncertain` recommendation for candidate
+  pairs the deterministic `pg_trgm` fuzzy matcher *already found* and scored into the
+  ambiguous confidence band — it is a second opinion on an existing candidate, not a new
+  discovery mechanism. **Still genuinely open:** Sprint 4's fuzzy matcher only ever surfaces
+  pairs with meaningful trigram (textual) overlap; it will not catch, and the Sprint 5 AI
+  adjudicator will never even see, a genuinely different-looking name that's semantically the
+  same entity with no textual overlap to compare (e.g. a DBA name bearing no resemblance to
+  the legal name) — that specific candidate-*discovery* gap is unchanged by this slice, real
+  future work, not silently closed. Left here, struck through, so the history of this gap
+  being opened and partially closed stays visible rather than silently rewritten.
 - **Entity resolution scope is Business Partners only.** TQ-037 added the Supplier entity
   and BP linkage, but there is no separate Supplier-to-Supplier fuzzy/exact matching pass —
   a duplicate Supplier record under the *same* BP is caught by the hard-block/soft-flag logic

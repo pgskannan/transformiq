@@ -78,11 +78,19 @@ let instance: JobQueue | null = null;
 export function getJobQueue(): JobQueue {
   if (instance) return instance;
 
-  const projectId = process.env.GCP_PROJECT_ID;
-  if (projectId) {
-    const topicName = process.env.INGESTION_JOBS_TOPIC;
-    if (!topicName) {
-      throw new Error("INGESTION_JOBS_TOPIC must be set when GCP_PROJECT_ID is set");
+  // Deliberately gated on INGESTION_JOBS_TOPIC, not GCP_PROJECT_ID (unlike objectStorage.ts's
+  // otherwise-parallel GCS/local split): as the class comment above says, the Pub/Sub side
+  // here only publishes — there is no consumer service deployed anywhere to drain that topic.
+  // Routing a real deployment there the moment GCP_PROJECT_ID happens to be set (e.g. for
+  // Secret Manager/GCS, both of which DO have real consumers) would silently strand every
+  // ingestion at "queued" forever. The in-process queue is the correct default until a real
+  // consumer (Cloud Run Jobs + Eventarc, per the class comment) is built and deployed; set
+  // INGESTION_JOBS_TOPIC explicitly, only once that consumer exists, to opt into Pub/Sub.
+  const topicName = process.env.INGESTION_JOBS_TOPIC;
+  if (topicName) {
+    const projectId = process.env.GCP_PROJECT_ID;
+    if (!projectId) {
+      throw new Error("GCP_PROJECT_ID must be set when INGESTION_JOBS_TOPIC is set");
     }
     instance = new PubSubJobQueue(projectId, topicName);
   } else {

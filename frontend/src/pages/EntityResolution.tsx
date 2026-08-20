@@ -13,6 +13,7 @@ import {
   type EntityMatchDetail,
   type EntityMatchSummary,
   type MatchDecision,
+  type MatchRecommendation,
 } from "../lib/api";
 
 function formatConfidence(score: number): string {
@@ -31,6 +32,35 @@ const DECISION_LABELS: Record<MatchDecision, string> = {
   keep_separate: "Keep Separate",
   reject: "Reject",
 };
+
+const RECOMMENDATION_LABELS: Record<MatchRecommendation, string> = {
+  merge: "Merge",
+  keep_separate: "Keep Separate",
+  uncertain: "Uncertain",
+};
+
+/** Small, visually distinct "second opinion" badge — deliberately never rendered as if it were
+ *  the decision itself (AGENTS.md Do-Not-Do rules #1/#4: an AI recommendation is never
+ *  auto-applied). Mirrors DataProfile.tsx's "✨ AI suggests" pattern for semantic type. Title
+ *  attribute carries the model's reasoning + version for a steward who wants the detail. */
+function AiRecommendationBadge({ match }: { match: EntityMatchSummary }) {
+  if (!match.ai_recommendation) return null;
+  return (
+    <span
+      title={`${match.ai_reasoning ?? ""} (${match.ai_model_version ?? "model unknown"})`}
+      style={{
+        display: "inline-block",
+        marginTop: 4,
+        fontSize: 12,
+        color: "#6639ba",
+        cursor: "help",
+      }}
+    >
+      ✨ AI suggests: <strong>{RECOMMENDATION_LABELS[match.ai_recommendation]}</strong>{" "}
+      {match.ai_confidence != null && `(${formatConfidence(match.ai_confidence)} confidence)`}
+    </span>
+  );
+}
 
 function BpSideCard({ bp, title }: { bp: BusinessPartnerDetail; title: string }) {
   const primary = bp.addresses.find((a) => a.is_primary) ?? bp.addresses[0];
@@ -190,6 +220,7 @@ export function EntityResolution() {
                 </span>{" "}
                 confidence · Decision: {DECISION_LABELS[m.decision]}
               </p>
+              <AiRecommendationBadge match={m} />
               <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                 {(Object.keys(DECISION_LABELS) as MatchDecision[]).map((decision) => (
                   <button
@@ -224,6 +255,17 @@ export function EntityResolution() {
                 </li>
               ))}
             </ul>
+            {detail.match.ai_recommendation && (
+              <>
+                <h3 style={{ fontSize: 15 }}>AI second opinion</h3>
+                <p style={{ margin: "0 0 4px" }}>
+                  <AiRecommendationBadge match={detail.match} />
+                </p>
+                {detail.match.ai_reasoning && (
+                  <p style={{ margin: 0, fontSize: 13, color: "#555" }}>{detail.match.ai_reasoning}</p>
+                )}
+              </>
+            )}
           </section>
         )}
       </div>

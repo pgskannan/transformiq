@@ -73,3 +73,54 @@ implemented") with a real implementation.
   would mean a second runtime/language in a single-service backend for one feature, with no
   offsetting benefit here (this is a single-shot classification call, not a multi-turn/tool-
   using agent loop where ADK's orchestration would earn its keep).
+
+## Addendum: extending this integration to entity match adjudication
+
+**Date:** 2026-08-20. **Context:** with the deploy pipeline and the first AI feature verified
+end-to-end on live Cloud Run, and time remaining before the hackathon deadline, we asked
+whether one more strong use case was worth adding rather than treating the semantic-type
+slice as the whole submission — see the project's own README "Known gaps" entry on entity
+resolution, which flagged AI-assisted second-opinion matching as real, honestly-scoped future
+work. AGENTS.md §1.6/FR-AI-001 names exactly four domains for AI assistance —
+"normalization, entity resolution, classification, and mapping" — and this ADR's original
+decision only covered "classification." "Entity resolution" was the other domain closest to
+existing Sprint 4 infrastructure (`lib/matching/engine.ts`'s deterministic/fuzzy matcher
+already produces a confidence score and an evidence list per candidate pair — exactly the
+shape a second-opinion LLM call needs as input), so it was the natural second slice rather
+than a new domain requiring new infrastructure.
+
+**Decision:** reuse this ADR's integration as-is — same Genkit/`googleAI` construction point
+in `lib/vertexAI.ts` (`generate()`, unmodified), same `gemini-3.6-flash` default, same
+Zod-structured-output-plus-`safeParse` degrade-to-null discipline, same non-authoritative
+"suggestion in separate columns" storage pattern (migration
+`0014_ai_entity_match_adjudication.sql` mirrors `0013_ai_semantic_suggestions.sql` column-
+for-column) — applied to a new module, `lib/matching/aiAdjudicator.ts`, gated by
+`isAmbiguousFuzzyMatch()` on the same cost-ascending-routing principle: only fuzzy candidates
+in confidence range `[0.5, 0.9)` reach Gemini at all; an exact-identifier match (1.0) is
+already maximally certain, and a fuzzy match already past 0.9 has little to gain from a
+second opinion.
+
+**One deliberate difference from the semantic-type module, called out explicitly:**
+`aiResolver.ts` sends only a structural "shape" of sample values (never the raw value) because
+the classification judgment ("does this look like an email/tax ID") only needs the pattern.
+Judging "are these two companies the same real-world entity" fundamentally cannot work from
+shapes alone — "Acme Corp" and "Acme Corporation" shape-reduce to different strings, and the
+actual name/location text is exactly the signal the task needs. So `aiAdjudicator.ts` sends
+the real `primary_name` and `city`/`region`/`postal_code`/`country_code` of each Business
+Partner. This is a deliberate, documented classification call under AGENTS.md §3.3, not an
+oversight: BP name/address is **Confidential** (commercial information about a company), not
+**Restricted** (personal/tax/banking identifiers) — Confidential's rule is "minimize/mask
+where possible," not the harder Restricted default-redact. The module honors the "minimize"
+half even though it doesn't need the full mask: it never sends the street address line
+(`bp_addresses.line1`, the most personally-locating part of an address), never `bp_identifiers`
+(tax IDs, etc.), and never `Suppliers` banking/contact fields — none of that is needed to
+judge "same company," so none of it is sent. This tradeoff is unit-tested directly
+(`aiAdjudicator.test.ts`'s privacy-shaped assertion: the prompt contains `primaryName`/city,
+never `line1` or an identifier-shaped value).
+
+**What this does NOT change**, mirroring this ADR's original list: the deterministic fuzzy
+matcher is untouched (same pure SQL/trigram logic, same tests, same behavior for every
+candidate outside the ambiguous band — the common case); no field is auto-applied from an AI
+suggestion (`ai_recommendation` is never written to `entity_matches.decision`, and the
+existing merge-requires-`approve` guardrail is completely unaffected by this feature); a
+missing key or failed call degrades to "no suggestion," never a blocked match-detection run.

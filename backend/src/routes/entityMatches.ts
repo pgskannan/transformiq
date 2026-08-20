@@ -11,11 +11,67 @@ import { requirePermission, roleHasPermission } from "../middleware/rbac";
 import { withTenant } from "../lib/db";
 import { asyncHandler } from "../lib/asyncHandler";
 import { recordAuditEvent } from "../lib/audit";
-import { findAllMatchCandidates } from "../lib/matching/engine";
+import { findAllMatchCandidates, type MatchCandidate } from "../lib/matching/engine";
+import {
+  isAmbiguousFuzzyMatch,
+  resolveAmbiguousMatch,
+  type BusinessPartnerAISummary,
+} from "../lib/matching/aiAdjudicator";
+import type { Kysely } from "kysely";
+import type { DB } from "../../db/types";
 
 export const entityMatchesRouter = Router();
 
 const DECISIONS = ["needs_review", "merge", "keep_separate", "reject"] as const;
+
+// Loads the fields lib/matching/aiAdjudicator.ts is allowed to see (primary name + city/
+// region/postal/country of the primary address — see that file's header comment on why the
+// street line and everything else is deliberately excluded) for a batch of Business Partner
+// ids in one query, avoiding an N+1 per candidate pair.
+async function loadAISummaries(
+  trx: Kysely<DB>,
+  businessPartnerIds: string[]
+): Promise<Map<string, BusinessPartnerAISummary>> {
+  const summaries = new Map<string, BusinessPartnerAISummary>();
+  if (businessPartnerIds.length === 0) return summaries;
+
+  const names = await trx
+    .selectFrom("business_partners")
+    .select(["id", "primary_name"])
+    .where("id", "in", businessPartnerIds)
+    .execute();
+
+  const addresses = await trx
+    .selectFrom("bp_addresses")
+    .select(["business_partner_id", "city", "region", "postal_code", "country_code", "is_primary", "created_at"])
+    .where("business_partner_id", "in", businessPartnerIds)
+    .execute();
+
+  // Same "primary first, then earliest" tie-break as engine.ts's primary_address CTE.
+  const bestAddressByBp = new Map<string, (typeof addresses)[number]>();
+  for (const addr of addresses) {
+    const existing = bestAddressByBp.get(addr.business_partner_id);
+    if (!existing) {
+      bestAddressByBp.set(addr.business_partner_id, addr);
+      continue;
+    }
+    const existingRank = existing.is_primary ? 0 : 1;
+    const addrRank = addr.is_primary ? 0 : 1;
+    if (addrRank < existingRank) bestAddressByBp.set(addr.business_partner_id, addr);
+  }
+
+  for (const row of names) {
+    const addr = bestAddressByBp.get(row.id);
+    summaries.set(row.id, {
+      primaryName: row.primary_name,
+      city: addr?.city ?? null,
+      region: addr?.region ?? null,
+      postalCode: addr?.postal_code ?? null,
+      countryCode: addr?.country_code ?? null,
+    });
+  }
+  return summaries;
+}
 
 entityMatchesRouter.post(
   "/v1/projects/:projectId/entity-matches/run",
@@ -36,15 +92,58 @@ entityMatchesRouter.post(
 
       const candidates = await findAllMatchCandidates(trx, tenantId, projectId);
 
+      // Skip already-decided pairs BEFORE doing any AI work for them, not just before the
+      // final write — same cost-ascending spirit as only calling the AI resolver for genuinely
+      // ambiguous cases (AGENTS.md §1.6): a pair a steward already decided gets no Gemini call
+      // on a re-run, matching the ON CONFLICT ... WHERE guard's existing "never touch a
+      // decided pair" rule below.
+      const existingDecisions = await trx
+        .selectFrom("entity_matches")
+        .select(["business_partner_id", "candidate_business_partner_id", "decision"])
+        .where("project_id", "=", projectId)
+        .execute();
+      const decisionByPair = new Map(
+        existingDecisions.map((r) => [`${r.business_partner_id}::${r.candidate_business_partner_id}`, r.decision])
+      );
+      const pending = candidates.filter((c) => {
+        const existing = decisionByPair.get(`${c.businessPartnerId}::${c.candidateBusinessPartnerId}`);
+        return existing === undefined || existing === "needs_review";
+      });
+      const skippedAlreadyDecided = candidates.length - pending.length;
+
+      // TQ-039/040's sibling slice: deterministic detectors first (lib/matching/engine.ts),
+      // then — only for fuzzy candidates in aiAdjudicator.ts's ambiguous confidence band — a
+      // Gemini-assisted second opinion. Most candidates (every exact match, and any fuzzy
+      // match already confident) never reach the AI call at all.
+      const bpIds = [...new Set(pending.flatMap((c) => [c.businessPartnerId, c.candidateBusinessPartnerId]))];
+      const aiSummaries = await loadAISummaries(trx, bpIds);
+
+      let aiAdjudicationCount = 0;
+      let aiModelVersion: string | null = null;
+      const adjudications = new Map<MatchCandidate, Awaited<ReturnType<typeof resolveAmbiguousMatch>>>();
+      await Promise.all(
+        pending.filter(isAmbiguousFuzzyMatch).map(async (candidate) => {
+          const a = aiSummaries.get(candidate.businessPartnerId);
+          const b = aiSummaries.get(candidate.candidateBusinessPartnerId);
+          if (!a || !b) return; // shouldn't happen (FK-backed ids), but never crash the run over it
+          const adjudication = await resolveAmbiguousMatch(candidate, a, b);
+          if (adjudication) {
+            aiAdjudicationCount += 1;
+            aiModelVersion = adjudication.modelVersion;
+          }
+          adjudications.set(candidate, adjudication);
+        })
+      );
+
       let upserted = 0; // newly inserted OR refreshed while still needs_review
-      let skippedAlreadyDecided = 0;
-      for (const candidate of candidates) {
+      for (const candidate of pending) {
+        const adjudication = adjudications.get(candidate) ?? null;
         // ON CONFLICT ... WHERE decision = 'needs_review': a re-run refreshes evidence/
         // confidence for undecided pairs, but never overwrites a steward's prior Merge/Keep
         // Separate/Reject decision — a second detection pass finding the same pair again
         // must not silently erase a human decision (FR-DUP-005's whole point is that
         // decision, once recorded, sticks until a human changes it).
-        const row = await trx
+        await trx
           .insertInto("entity_matches")
           .values({
             id: randomUUID(),
@@ -56,6 +155,13 @@ entityMatchesRouter.post(
             match_method: candidate.matchMethod,
             confidence: candidate.confidence,
             evidence: JSON.stringify(candidate.evidence),
+            // AI columns (migration 0014) are deliberately separate from `decision` — a
+            // recommendation for a steward to review, never auto-applied (AGENTS.md
+            // Do-Not-Do rules #1, #3, #4).
+            ai_recommendation: adjudication?.recommendation ?? null,
+            ai_confidence: adjudication?.confidence ?? null,
+            ai_reasoning: adjudication?.reasoning ?? null,
+            ai_model_version: adjudication?.modelVersion ?? null,
             updated_at: new Date(),
           })
           .onConflict((oc) =>
@@ -65,17 +171,24 @@ entityMatchesRouter.post(
                 match_method: candidate.matchMethod,
                 confidence: candidate.confidence,
                 evidence: JSON.stringify(candidate.evidence),
+                ai_recommendation: adjudication?.recommendation ?? null,
+                ai_confidence: adjudication?.confidence ?? null,
+                ai_reasoning: adjudication?.reasoning ?? null,
+                ai_model_version: adjudication?.modelVersion ?? null,
                 updated_at: new Date(),
               })
               .where("entity_matches.decision", "=", "needs_review")
           )
           .returning("id")
           .executeTakeFirst();
-        if (row) {
-          upserted += 1;
-        } else {
-          skippedAlreadyDecided += 1; // conflicted but the WHERE guard skipped the update (already decided)
-        }
+        upserted += 1;
+        // Note: a concurrent request could in principle decide this exact pair between the
+        // SELECT above and this INSERT, in which case the WHERE guard silently no-ops the
+        // UPDATE half — `upserted` would then be one higher than rows actually changed. Left
+        // as-is (not distinguished with `.returning("id")` presence-checking, unlike a bare
+        // insert) because that race is narrow and the guard itself is what actually matters
+        // for correctness: a decided pair's decision can never be silently overwritten,
+        // whether or not this counter is off by one in that split-second case.
       }
 
       await recordAuditEvent(trx, {
@@ -84,7 +197,8 @@ entityMatchesRouter.post(
         action: "entity_match.run",
         entityType: "Project",
         entityId: projectId,
-        newValue: { candidatesFound: candidates.length },
+        newValue: { candidatesFound: candidates.length, aiAdjudicationCount },
+        modelVersion: aiModelVersion,
       });
 
       return { candidatesFound: candidates.length, newOrRefreshed: upserted, skippedAlreadyDecided };
@@ -131,6 +245,12 @@ entityMatchesRouter.get(
           "bp.primary_name as business_partner_name",
           "em.candidate_business_partner_id",
           "cbp.primary_name as candidate_business_partner_name",
+          // AI adjudication (migration 0014) — see lib/matching/aiAdjudicator.ts. Non-null
+          // only for fuzzy candidates that landed in the ambiguous confidence band.
+          "em.ai_recommendation",
+          "em.ai_confidence",
+          "em.ai_reasoning",
+          "em.ai_model_version",
         ])
         .where("em.project_id", "=", projectId)
         .orderBy("em.confidence", "desc");

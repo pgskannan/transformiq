@@ -142,6 +142,10 @@ export interface DatasetVersions {
 }
 
 export interface EntityMatches {
+  ai_confidence: number | null;
+  ai_model_version: string | null;
+  ai_reasoning: string | null;
+  ai_recommendation: string | null;
   business_partner_id: string;
   candidate_business_partner_id: string;
   confidence: number;
